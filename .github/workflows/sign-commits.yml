@@ -23,6 +23,7 @@ jobs:
                 team_slug: 'test-team',
                 username: context.payload.pull_request.user.login
               });
+              console.log(`User ${context.payload.pull_request.user.login} is in team: ${response.data.state}`);
               return response.data.state === 'active';
             } catch (error) {
               if (error.status === 404) {
@@ -46,22 +47,30 @@ jobs:
         if: steps.check_team.outputs.result == 'true'
         id: check_unsigned
         run: |
+          set +e  # Don't exit on error
+          
           git fetch origin ${{ github.event.pull_request.base.ref }}
           
           # Get list of commits in the PR
           commits=$(git rev-list origin/${{ github.event.pull_request.base.ref }}..${{ github.event.pull_request.head.sha }})
           
+          echo "Commits in PR:"
+          echo "$commits"
+          
           has_unsigned=false
           
           for commit in $commits; do
+            echo "Checking commit: $commit"
             # Check if commit is signed (gpgsig field exists in commit object)
             if ! git cat-file commit $commit | grep -q "^gpgsig"; then
               echo "Found unsigned commit: $commit"
               has_unsigned=true
-              break
+            else
+              echo "Commit $commit is signed"
             fi
           done
           
+          echo "Final has_unsigned value: $has_unsigned"
           echo "has_unsigned=$has_unsigned" >> $GITHUB_OUTPUT
 
       - name: Import GPG key
@@ -73,18 +82,49 @@ jobs:
           git_user_signingkey: true
           git_commit_gpgsign: true
 
+      - name: Verify GPG setup
+        if: steps.check_team.outputs.result == 'true' && steps.check_unsigned.outputs.has_unsigned == 'true'
+        run: |
+          echo "GPG keys available:"
+          gpg --list-secret-keys --keyid-format=long
+          
+          echo "Git config:"
+          git config --list | grep -E '(user\.|commit\.|gpg\.)'
+          
+          echo "Testing GPG signing:"
+          echo "test" | gpg --clearsign
+
       - name: Configure Git
         if: steps.check_team.outputs.result == 'true' && steps.check_unsigned.outputs.has_unsigned == 'true'
         run: |
           git config user.name "${{ github.event.pull_request.user.login }}"
           git config user.email "${{ github.event.pull_request.user.email }}"
           git config commit.gpgsign true
+          
+          echo "Git configured as:"
+          git config user.name
+          git config user.email
+          git config commit.gpgsign
 
       - name: Sign all unsigned commits
         if: steps.check_team.outputs.result == 'true' && steps.check_unsigned.outputs.has_unsigned == 'true'
         run: |
           git fetch origin ${{ github.event.pull_request.base.ref }}
+          
+          echo "Starting rebase with signing..."
+          export GPG_TTY=$(tty)
+          
+          # Rebase and sign each commit
           git rebase --exec 'git commit --amend --no-edit -n -S' origin/${{ github.event.pull_request.base.ref }}
+          
+          echo "Verifying commits are now signed:"
+          for commit in $(git rev-list origin/${{ github.event.pull_request.base.ref }}..HEAD); do
+            if git cat-file commit $commit | grep -q "^gpgsig"; then
+              echo "✓ Commit $commit is signed"
+            else
+              echo "✗ Commit $commit is NOT signed"
+            fi
+          done
 
       - name: Force push signed commits
         if: steps.check_team.outputs.result == 'true' && steps.check_unsigned.outputs.has_unsigned == 'true'
