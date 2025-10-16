@@ -23,6 +23,7 @@ jobs:
                 team_slug: 'test-team',
                 username: context.payload.pull_request.user.login
               });
+              console.log(`User ${context.payload.pull_request.user.login} is in team: ${response.data.state}`);
               return response.data.state === 'active';
             } catch (error) {
               if (error.status === 404) {
@@ -46,22 +47,30 @@ jobs:
         if: steps.check_team.outputs.result == 'true'
         id: check_unsigned
         run: |
+          set +e  # Don't exit on error
+          
           git fetch origin ${{ github.event.pull_request.base.ref }}
           
           # Get list of commits in the PR
           commits=$(git rev-list origin/${{ github.event.pull_request.base.ref }}..${{ github.event.pull_request.head.sha }})
           
+          echo "Commits in PR:"
+          echo "$commits"
+          
           has_unsigned=false
           
           for commit in $commits; do
+            echo "Checking commit: $commit"
             # Check if commit is signed (gpgsig field exists in commit object)
             if ! git cat-file commit $commit | grep -q "^gpgsig"; then
               echo "Found unsigned commit: $commit"
               has_unsigned=true
-              break
+            else
+              echo "Commit $commit is signed"
             fi
           done
           
+          echo "Final has_unsigned value: $has_unsigned"
           echo "has_unsigned=$has_unsigned" >> $GITHUB_OUTPUT
 
       - name: Import GPG key
